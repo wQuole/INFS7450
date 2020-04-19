@@ -2,6 +2,8 @@ import time
 import numpy as np
 import networkx as nx
 from collections import OrderedDict
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 DATASET = './data/facebook.txt'
 
@@ -36,6 +38,7 @@ def get_top_n_nodes(nodes, n=10, nx=False):
             print(f"Node-{node} --> \t C_b: {pagerank}")
         else:
             print(f"Node-{node} --> \t C_b: {pagerank/len(nodes)}")
+    return [n for n in top.keys()]
 
 
 def page_rank(G, alpha=0.85, epsilon=1e-4, max_iter=100):
@@ -55,7 +58,7 @@ def page_rank(G, alpha=0.85, epsilon=1e-4, max_iter=100):
     A = G.adj
     D = dict(d for d in G.degree)
     D = inv_dict(D)
-    c = dict((n, 1.0/N) for n in G)
+    c = dict((n, 1.0) for n in G)
     for _ in range(max_iter):
         prev_c = c
         c = dict((n, 0.0) for n in G)
@@ -72,19 +75,23 @@ def page_rank(G, alpha=0.85, epsilon=1e-4, max_iter=100):
 def main():
     G = load_edges(DATASET)
 
-    print("wQuole implementation of PageRank")
     start = time.time()
     pr = page_rank(G)
-    print(pr)
     end = time.time()
     print(f"wQuole PageRank took {round(end - start, 3)} seconds to run.")
-    get_top_n_nodes(pr)
+    top = get_top_n_nodes(pr)
 
-    print("\nNetworkX's implementation of PageRank:")
+
     start = time.time()
     nx_pr = nx.pagerank(G)
     end = time.time()
     print(f"NetworkX PageRank took {round(end - start, 3)} seconds to run.")
     get_top_n_nodes(nx_pr, nx=True)
+
+    # Write to file
+    # with open("output/46301303.txt", "a") as txtfile:
+    #     for node in top:
+    #         print(node, end=" ", file=txtfile)
+
 
 main()
