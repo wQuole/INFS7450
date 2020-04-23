@@ -2,8 +2,6 @@ import time
 import numpy as np
 import networkx as nx
 from collections import OrderedDict
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 
 DATASET = './data/facebook.txt'
 
