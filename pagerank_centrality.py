@@ -18,16 +18,6 @@ def load_edges(filepath, type=int):
     return G
 
 
-def inv_dict(d):
-    """
-    Helper method to invert values in a dict
-    """
-    ret = {}
-    for node, degree in d.items():
-        ret[node] = 1/degree
-    return ret
-
-
 def get_top_n_nodes(nodes, n=10, nx=False):
     """
     Helper method to return top n nodes from a dict
@@ -56,8 +46,7 @@ def page_rank(G, alpha=0.85, epsilon=1e-4, max_iter=100):
     """
     N = G.number_of_nodes()
     A = G.adj
-    D = dict(d for d in G.degree)
-    D = inv_dict(D)
+    D = dict((n, 1/d) for n, d in G.degree())
     c = dict((n, 1.0) for n in G)
     for _ in range(max_iter):
         prev_c = c
