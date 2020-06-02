@@ -83,11 +83,21 @@ def get_top_n_links(links, n=100, out=False):
 def evaluate(proposed, ground_truth):
     hits = 0
     for i, link in enumerate(proposed):
-        if (link in ground_truth) or (link[::-1] in ground_truth):
+        if link in ground_truth:
             print(f"{link} <-- {link[::-1]}")
             hits += 1
     print(f"{hits}/{len(ground_truth)}")
     return float(hits/len(ground_truth))
+
+
+def evaluate_alt(proposed, ground_truth):
+    hits = 0
+    for i in range(len(proposed)):
+        for j in range(len(ground_truth)):
+            if (proposed[i] == ground_truth[j]) or (proposed[i][::-1] == ground_truth[j]):
+                print(f"{proposed[i]} = {ground_truth[j]}")
+                hits += 1
+    return hits / len(ground_truth)
 
 
 if __name__ == '__main__':
@@ -103,7 +113,7 @@ if __name__ == '__main__':
     score_validation = compute_proximity(G_train,
                                          edges=links_validation,
                                          neighbors=nbrs_train,
-                                         measurement='adamic')
+                                         measurement='preferential')
 
     # Use positive validation set to evaluate score
     G_valid_pos = get_graph(VAL_POS)
