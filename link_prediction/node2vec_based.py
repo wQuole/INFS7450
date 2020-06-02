@@ -1,39 +1,29 @@
 import numpy as np
 import pandas as pd
 import networkx as nx
+from random import choice
+from node2vec import Node2Vec
 from collections import OrderedDict
+from node2vec.edges import HadamardEmbedder
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 
-TRAINING = "data/training.txt"
+
+TRAINING_POS = "data/training.txt"
+TRAINING_NEG = "data/training_negative.txt"
 VAL_POS = "data/val_positive.txt"
 VAL_NEG = "data/val_negative.txt"
 TESTING = "data/testing.txt"
 
 
-def get_graph(filepath=None, lists=None, valid=False):
-    if valid:
+def get_graph(filepath=None, lists=None):
+    if lists is not None:
         nx_graph = nx.Graph()
         nx_graph.add_edges_from(lists)
     else:
         nx_graph = nx.read_edgelist(path=filepath, nodetype=int, delimiter=' ')
         nx_graph = nx_graph.to_undirected()
     return nx_graph
-
-
-def get_edges_for_validation(filepath):
-    temp = []
-    with open(filepath) as validation:
-        for pair in validation:
-            n1, n2 = pair.strip().split()
-            temp.append((int(n1), int(n2)))
-    return temp
-
-
-def merge_validation_sets(pos_path, neg_path):
-    pos = get_edges_for_validation(pos_path)
-    neg = get_edges_for_validation(neg_path)
-    validation_data = pos + neg
-
-    return validation_data
 
 
 def get_neighbors(G):
@@ -43,33 +33,48 @@ def get_neighbors(G):
     return neighbors
 
 
-def compute_proximity(G, edges, neighbors, measurement='jaccard'):
-    score = dict()
-
-    if measurement.lower() == 'jaccard':
-        for pair in edges:
-            p1, p2 = pair
-            numerator = len(set(neighbors[p1]).intersection(set(neighbors[p2])))
-            denominator = len(set(neighbors[p1]).union(set(neighbors[p2])))
-            score[(p1, p2)] = numerator/denominator
-
-    elif measurement.lower() == 'adamic' or measurement.lower() == 'adar':
-        adamic_adar_index = nx.adamic_adar_index(G, edges)
-        for p1, p2, aai in adamic_adar_index:
-            score[(p1, p2)] = aai
-
-    elif measurement.lower() == 'preferential':
-        for pair in edges:
-            p1, p2 = pair
-            score[(p1, p2)] = len(neighbors[p1]) * len(neighbors[p2])
+def get_edges(filepath, label=None):
+    x, y = [], []
+    with open(filepath, 'r') as pairs:
+        for pair in pairs:
+            n1, n2 = pair.strip().split()
+            if label is not None:
+                x.append((int(n1), int(n2)))
+                y.append(label)
+            else:
+                x.append((int(n1), int(n2)))
+    if label is not None:
+        return x, y
     else:
-        return f"Measurement: '{measurement}' is not valid. Use one of the following:" \
-               f"\n- jaccard" \
-               f"\n- adamic" \
-               f"\n- adar" \
-               f"\n- preferential"
+        return x
 
-    return score
+
+def merge_datasets(pos_path, neg_path, labelling=False):
+    if labelling:
+        x_pos, y_pos = get_edges(pos_path, label=1)
+        x_neg, y_neg = get_edges(neg_path, label=0)
+        x = x_pos + x_neg
+        y = y_pos + y_neg
+        return x, y
+    else:
+        pos = get_edges(pos_path)
+        neg = get_edges(neg_path)
+        x = pos + neg
+        return x
+
+
+def generate_negative_edges(G_train, complete_data, N):
+    new_negative_edges = []
+
+    while len(new_negative_edges) < 5*N:
+        node1 = choice(list(G_train.nodes()))
+        node2 = choice(list(G_train.nodes()))
+        new_link = (node1, node2)
+        if new_link in complete_data or new_link[::-1] in complete_data:
+            print(f"{new_link} already in dataset.")
+        else:
+            new_negative_edges.append(new_link)
+    return new_negative_edges
 
 
 def get_top_n_links(links, n=100, out=False):
@@ -90,39 +95,66 @@ def evaluate(proposed, ground_truth):
     return float(hits/len(ground_truth))
 
 
-def evaluate_alt(proposed, ground_truth):
-    hits = 0
-    for i in range(len(proposed)):
-        for j in range(len(ground_truth)):
-            if (proposed[i] == ground_truth[j]) or (proposed[i][::-1] == ground_truth[j]):
-                print(f"{proposed[i]} = {ground_truth[j]}")
-                hits += 1
-    return hits / len(ground_truth)
+def preprocess_for_hadamard(X_train):
+    ret = []
+    for pair in X_train:
+        a1, a2 = str(pair[0]), str(pair[1])
+        ret.append((a1, a2))
+    return ret
+
+
+def node2vec_embedding(G, validation_links, dims=20, how_long=20, number_of_walks=20, return_parameter=1.4, walk_away_parameter=0.9):
+    n2v = Node2Vec(G, dimensions=dims, walk_length=how_long, num_walks=number_of_walks, p=return_parameter, q=walk_away_parameter)
+    print("Fitting model...")
+    model = n2v.fit(window=4, min_count=1, sg=1, hs=0)
+    return model
 
 
 if __name__ == '__main__':
     '''TRAINING'''
-    G_train = get_graph(TRAINING)
-    links_train = list(G_train.edges())
+    # Generate graph and lists for positive training samples
+    G_train_pos = get_graph(filepath=TRAINING_POS)
+    X_train_pos = list(G_train_pos.edges())
+
+    # Generate graph and lists for negative + positive training samples
+    X_train, y_train = merge_datasets(TRAINING_POS, TRAINING_NEG, labelling=True)
+    G_train = get_graph(lists=X_train)
     nbrs_train = get_neighbors(G_train)
 
     '''VALIDATION'''
-    links_validation = merge_validation_sets(VAL_POS, VAL_NEG)
-    G_validation = get_graph(lists=links_validation, valid=True)
-    # Use complete validation set (pos + neg) to compute proximity score
-    score_validation = compute_proximity(G_train,
-                                         edges=links_validation,
-                                         neighbors=nbrs_train,
-                                         measurement='preferential')
+    X_validation = merge_datasets(VAL_POS, VAL_NEG, labelling=False)
+    G_validation = get_graph(lists=X_validation)
+    links_validation = list(G_validation.edges())
+    # For evaluation matters later
+    G_validation_pos = get_graph(filepath=VAL_POS)
+    positive_validation_links = list(G_validation_pos.edges())
+    G_validation_neg = get_graph(filepath=VAL_NEG)
+    negative_validation_links = list(G_validation_neg.edges())
 
+    '''node2vec'''
+    model = node2vec_embedding(G_train, links_validation)
+    edges_embs = HadamardEmbedder(keyed_vectors=model.wv)
+    X_train = preprocess_for_hadamard(X_train)
+    X_train_embedded = [edges_embs[(x)] for x in X_train]
+
+
+    '''EVALUATION'''
+    links_validation = preprocess_for_hadamard(links_validation)
+    links_validation_embedded = [edges_embs[(x)] for x in links_validation]
+    lr = LogisticRegression(class_weight='balanced')
+    clf = lr.fit(X_train_embedded, y_train)
+
+    predictions = clf.predict_proba(links_validation_embedded)
+    print("predictions\n",predictions)
     # Use positive validation set to evaluate score
     G_valid_pos = get_graph(VAL_POS)
     links_ground_truth = list(G_valid_pos.edges())
-
+    validation_edge_labels = np.concatenate([np.ones(len(positive_validation_links)), np.zeros(len(negative_validation_links))])
+    print(clf.score(links_validation_embedded, validation_edge_labels))
     # Evalute accuracy
-    top_validation = get_top_n_links(score_validation, out=False)
-    eval_validation = evaluate(top_validation, links_ground_truth)
-    print(f"Accuracy: {round(eval_validation*100, 2)} % on the validation set.")
+    #top_validation = get_top_n_links(predictions, out=False)
+    #eval_validation = evaluate(top_validation, links_ground_truth)
+    #print(f"Accuracy: {round(eval_validation*100, 2)} % on the validation set.")
 
     '''TESTING'''
     # G_test = get_graph(TESTING)
@@ -131,6 +163,13 @@ if __name__ == '__main__':
     #
     # top_testing = get_top_n_links(score_testing, out=False)
     # # Write to file
-    # with open("output/46301303.txt", "w") as txtfile:
+    # with open("output/node2vec/46301303.txt", "w") as txtfile:
     #      for pair in top_testing:
     #          print(str(pair[0])+' '+str(pair[1]), end="\n", file=txtfile)
+
+    # '''GENERATE TRAINING DATA'''
+    # dont_touch = links_validation + links_testing + X_train_pos
+    # new_training_data = generate_negative_edges(G_train, dont_touch, N=len(X_train_pos))
+    # with open('data/training_negative.txt', 'w') as out:
+    #     for pair in new_training_data:
+    #         print(str(pair[0]) + ' ' + str(pair[1]), end='\n', file=out)
