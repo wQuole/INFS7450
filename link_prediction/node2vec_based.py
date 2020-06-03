@@ -1,12 +1,14 @@
+# Local modules
+import utils
+# External modules
 import numpy as np
-import pandas as pd
 import networkx as nx
 from random import choice
 from node2vec import Node2Vec
 from collections import OrderedDict
 from node2vec.edges import HadamardEmbedder
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
 
 
 TRAINING_POS = "data/training.txt"
@@ -95,23 +97,17 @@ def evaluate(proposed, ground_truth):
     return float(hits/len(ground_truth))
 
 
-def preprocess_for_hadamard(X_train):
+def preprocess_lists(X_train, cast=str):
     ret = []
     for pair in X_train:
-        a1, a2 = str(pair[0]), str(pair[1])
+        a1, a2 = cast(pair[0]), cast(pair[1])
         ret.append((a1, a2))
     return ret
 
 
-def node2vec_embedding(G, validation_links, dims=20, how_long=20, number_of_walks=20, return_parameter=1.4, walk_away_parameter=0.9):
-    n2v = Node2Vec(G, dimensions=dims, walk_length=how_long, num_walks=number_of_walks, p=return_parameter, q=walk_away_parameter)
-    print("Fitting model...")
-    model = n2v.fit(window=4, min_count=1, sg=1, hs=0)
-    return model
-
-
 if __name__ == '__main__':
-    '''TRAINING'''
+    '''PREPARE DATA'''
+    # --- Training data ---
     # Generate graph and lists for positive training samples
     G_train_pos = get_graph(filepath=TRAINING_POS)
     X_train_pos = list(G_train_pos.edges())
@@ -121,7 +117,7 @@ if __name__ == '__main__':
     G_train = get_graph(lists=X_train)
     nbrs_train = get_neighbors(G_train)
 
-    '''VALIDATION'''
+    # --- Validation ---
     X_validation = merge_datasets(VAL_POS, VAL_NEG, labelling=False)
     G_validation = get_graph(lists=X_validation)
     links_validation = list(G_validation.edges())
@@ -131,43 +127,50 @@ if __name__ == '__main__':
     G_validation_neg = get_graph(filepath=VAL_NEG)
     negative_validation_links = list(G_validation_neg.edges())
 
-    '''node2vec'''
-    model = node2vec_embedding(G_train, links_validation)
-    edges_embs = HadamardEmbedder(keyed_vectors=model.wv)
-    X_train = preprocess_for_hadamard(X_train)
-    X_train_embedded = [edges_embs[(x)] for x in X_train]
 
+    '''node2vec'''
+    n2v = Node2Vec(G_train,
+                   dimensions=64,
+                   walk_length=16,
+                   num_walks=10,
+                   p=1,
+                   q=1)
+    print("Fitting model...")
+    model = n2v.fit(window=5, min_count=1, sg=1, hs=0)
+    print("Embedding nodes...")
+    hadamard_embedded_links = HadamardEmbedder(keyed_vectors=model.wv)
+    links_validation = preprocess_lists(links_validation)
+    links_validation_embedded = [hadamard_embedded_links[x] for x in links_validation]
+    X_train = preprocess_lists(X_train)
+    X_train_embedded = [hadamard_embedded_links[x] for x in X_train]
+
+    '''CLASSIFICATION'''
+    # Standardize features by removing mean and scale to unit variance
+    std = StandardScaler()
+    X_train = std.fit_transform(X_train_embedded)
+    X_validation = std.transform(links_validation_embedded)
+
+    logit = LogisticRegression(solver='saga', max_iter=500)
+    clf = logit.fit(X_train, y_train)
+    probabilities = clf.predict_proba(X_validation)
 
     '''EVALUATION'''
-    links_validation = preprocess_for_hadamard(links_validation)
-    links_validation_embedded = [edges_embs[(x)] for x in links_validation]
-    lr = LogisticRegression(class_weight='balanced')
-    clf = lr.fit(X_train_embedded, y_train)
+    score = dict()
+    links_validation = preprocess_lists(links_validation, cast=int)
+    for i, prob in enumerate(probabilities):
+        score[links_validation[i]] = prob[1]
+    top100 = get_top_n_links(score, out=1)
 
-    predictions = clf.predict_proba(links_validation_embedded)
-    print("predictions\n",predictions)
     # Use positive validation set to evaluate score
     G_valid_pos = get_graph(VAL_POS)
     links_ground_truth = list(G_valid_pos.edges())
-    validation_edge_labels = np.concatenate([np.ones(len(positive_validation_links)), np.zeros(len(negative_validation_links))])
-    print(clf.score(links_validation_embedded, validation_edge_labels))
+
     # Evalute accuracy
-    #top_validation = get_top_n_links(predictions, out=False)
-    #eval_validation = evaluate(top_validation, links_ground_truth)
-    #print(f"Accuracy: {round(eval_validation*100, 2)} % on the validation set.")
+    accuracy = evaluate(top100, links_ground_truth)
+    print(f"Accuracy on validation set: {round(accuracy*100, 5)} %.")
 
-    '''TESTING'''
-    # G_test = get_graph(TESTING)
-    # links_testing = list(G_test.edges())
-    # score_testing = compute_proximity(G_test, edges=links_testing, neighbors=nbrs_train, measurement='jaccard')
-    #
-    # top_testing = get_top_n_links(score_testing, out=False)
-    # # Write to file
-    # with open("output/node2vec/46301303.txt", "w") as txtfile:
-    #      for pair in top_testing:
-    #          print(str(pair[0])+' '+str(pair[1]), end="\n", file=txtfile)
 
-    # '''GENERATE TRAINING DATA'''
+    '''GENERATE TRAINING DATA'''
     # dont_touch = links_validation + links_testing + X_train_pos
     # new_training_data = generate_negative_edges(G_train, dont_touch, N=len(X_train_pos))
     # with open('data/training_negative.txt', 'w') as out:
