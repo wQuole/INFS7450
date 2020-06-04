@@ -1,13 +1,8 @@
-# Local modules
-import utils
-# External modules
-import numpy as np
 import networkx as nx
 from random import choice
 from node2vec import Node2Vec
 from collections import OrderedDict
 from node2vec.edges import HadamardEmbedder
-from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 
 
@@ -110,7 +105,7 @@ if __name__ == '__main__':
     # --- Training data ---
     # Generate graph and lists for positive training samples
     G_train_pos = get_graph(filepath=TRAINING_POS)
-    X_train_pos = list(G_train_pos.edges())
+    links_training_pos = list(G_train_pos.edges())
 
     # Generate graph and lists for negative + positive training samples
     X_train, y_train = merge_datasets(TRAINING_POS, TRAINING_NEG, labelling=True)
@@ -118,60 +113,51 @@ if __name__ == '__main__':
     nbrs_train = get_neighbors(G_train)
 
     # --- Validation ---
-    X_validation = merge_datasets(VAL_POS, VAL_NEG, labelling=False)
-    G_validation = get_graph(lists=X_validation)
+    links_validation = merge_datasets(VAL_POS, VAL_NEG, labelling=False)
+    G_validation = get_graph(lists=links_validation)
     links_validation = list(G_validation.edges())
-    # For evaluation matters later
-    G_validation_pos = get_graph(filepath=VAL_POS)
-    positive_validation_links = list(G_validation_pos.edges())
-    G_validation_neg = get_graph(filepath=VAL_NEG)
-    negative_validation_links = list(G_validation_neg.edges())
+
+    # Use positive validation set to evaluate score
+    G_valid_pos = get_graph(VAL_POS)
+    X_test = list(G_valid_pos.edges())
 
 
-    '''node2vec'''
+    '''NODE2VEC'''
     n2v = Node2Vec(G_train,
-                   dimensions=64,
+                   dimensions=128,
                    walk_length=16,
                    num_walks=10,
-                   p=1,
-                   q=1)
+                   workers=6) # Windows OS might be limited to 1
     print("Fitting model...")
     model = n2v.fit(window=5, min_count=1, sg=1, hs=0)
     print("Embedding nodes...")
     hadamard_embedded_links = HadamardEmbedder(keyed_vectors=model.wv)
-    links_validation = preprocess_lists(links_validation)
-    links_validation_embedded = [hadamard_embedded_links[x] for x in links_validation]
+    X_validation = preprocess_lists(links_validation)
+    X_validation_embedded = [hadamard_embedded_links[x] for x in X_validation]
     X_train = preprocess_lists(X_train)
     X_train_embedded = [hadamard_embedded_links[x] for x in X_train]
 
+
     '''CLASSIFICATION'''
     # Standardize features by removing mean and scale to unit variance
-    std = StandardScaler()
-    X_train = std.fit_transform(X_train_embedded)
-    X_validation = std.transform(links_validation_embedded)
+    logit = LogisticRegression()
+    clf = logit.fit(X_train_embedded, y_train)
+    probabilities = clf.predict_proba(X_validation_embedded)
 
-    logit = LogisticRegression(solver='saga', max_iter=500)
-    clf = logit.fit(X_train, y_train)
-    probabilities = clf.predict_proba(X_validation)
 
     '''EVALUATION'''
     score = dict()
-    links_validation = preprocess_lists(links_validation, cast=int)
+    X_validation = preprocess_lists(X_validation, cast=int)
     for i, prob in enumerate(probabilities):
         score[links_validation[i]] = prob[1]
     top100 = get_top_n_links(score, out=1)
 
-    # Use positive validation set to evaluate score
-    G_valid_pos = get_graph(VAL_POS)
-    links_ground_truth = list(G_valid_pos.edges())
-
-    # Evalute accuracy
-    accuracy = evaluate(top100, links_ground_truth)
+    accuracy = evaluate(top100, X_test)
     print(f"Accuracy on validation set: {round(accuracy*100, 5)} %.")
 
 
     '''GENERATE TRAINING DATA'''
-    # dont_touch = links_validation + links_testing + X_train_pos
+    # dont_touch = links_validation + links_testing + links_training_pos
     # new_training_data = generate_negative_edges(G_train, dont_touch, N=len(X_train_pos))
     # with open('data/training_negative.txt', 'w') as out:
     #     for pair in new_training_data:
